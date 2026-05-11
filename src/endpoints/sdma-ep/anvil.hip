@@ -92,7 +92,13 @@ hsa_status_t rocm_hsa_cpu_agent_callback(hsa_agent_t agent,
 }
 
 void SetUpKFD() {
-  CHECK_HSAKMT_SUCCESS(hsaKmtOpenKFD(), "hsaKmtOpenKFD() failed!");
+  HSAKMT_STATUS kfd_status = hsaKmtOpenKFD();
+  if (kfd_status != HSAKMT_STATUS_SUCCESS &&
+      kfd_status != HSAKMT_STATUS_KERNEL_ALREADY_OPENED) {
+    std::cerr << "Warning: hsaKmtOpenKFD() returned " << kfd_status
+              << ", continuing (KFD may already be open via HSA runtime)"
+              << std::endl;
+  }
   HsaSystemProperties m_SystemProperties;
   std::memset(&m_SystemProperties, 0, sizeof(m_SystemProperties));
   CHECK_HSAKMT_SUCCESS(hsaKmtAcquireSystemProperties(&m_SystemProperties),
