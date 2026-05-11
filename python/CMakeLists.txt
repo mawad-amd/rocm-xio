@@ -28,7 +28,13 @@ if(NOT pybind11_FOUND)
   endif()
 endif()
 
+# Must compile as HIP — sdma-ep.h has __device__ functions with HIP builtins
+set_source_files_properties(sdma_ep_bindings.cpp PROPERTIES LANGUAGE HIP)
+
 pybind11_add_module(sdma_ep sdma_ep_bindings.cpp)
+
+# Need -fgpu-rdc to link against rocm-xio (built with -fgpu-rdc)
+target_link_options(sdma_ep PRIVATE -fgpu-rdc)
 
 target_include_directories(sdma_ep PRIVATE
   ${CMAKE_SOURCE_DIR}/src/include
