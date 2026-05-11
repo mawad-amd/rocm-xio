@@ -1,40 +1,54 @@
-cmake_minimum_required(VERSION 3.18)
-project(xio_sdma_ep LANGUAGES CXX)
+# Python bindings for rocm-xio SDMA endpoint.
+#
+# This is added to the top-level build via add_subdirectory(python).
+# Requires BUILD_SHARED_LIBS=ON and pybind11.
+#
+# Usage (standalone):
+#   mkdir build && cd build
+#   cmake -DBUILD_SHARED_LIBS=ON -DOFFLOAD_ARCH=gfx942 ..
+#   make -j sdma_ep
+#
+# Usage (as part of top-level rocm-xio build):
+#   add_subdirectory(python)  # in top-level CMakeLists.txt
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+find_package(pybind11 CONFIG QUIET)
+if(NOT pybind11_FOUND)
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE} -m pybind11 --cmakedir
+    OUTPUT_VARIABLE PYBIND11_CMAKE_DIR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE PYBIND11_RESULT
+  )
+  if(PYBIND11_RESULT EQUAL 0)
+    list(APPEND CMAKE_PREFIX_PATH "${PYBIND11_CMAKE_DIR}")
+    find_package(pybind11 CONFIG REQUIRED)
+  else()
+    message(FATAL_ERROR "pybind11 not found. Install with: pip install pybind11")
+  endif()
+endif()
 
-# ROCm
-list(APPEND CMAKE_PREFIX_PATH "/opt/rocm")
-find_package(hip REQUIRED)
-find_package(hsa-runtime64 REQUIRED)
-
-# pybind11
-find_package(pybind11 REQUIRED)
-
-# hsakmt
-find_library(HSAKMT_LIB hsakmt PATHS /opt/rocm/lib REQUIRED)
-
-set(SDMA_EP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../src/endpoints/sdma-ep")
-
-pybind11_add_module(sdma_ep
-  sdma_ep_bindings.cpp
-  anvil_standalone.cpp
-)
+pybind11_add_module(sdma_ep sdma_ep_bindings.cpp)
 
 target_include_directories(sdma_ep PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}
-  ${SDMA_EP_DIR}
-  /opt/rocm/include
-  /opt/rocm/include/hsakmt
+  ${CMAKE_SOURCE_DIR}/src/include
+  ${CMAKE_SOURCE_DIR}/src/endpoints/sdma-ep
+  ${CMAKE_SOURCE_DIR}/src/common
 )
 
 target_link_libraries(sdma_ep PRIVATE
+  rocm-xio
   hip::host
-  hsa-runtime64::hsa-runtime64
-  ${HSAKMT_LIB}
 )
 
-# Install into xio/ package directory
-install(TARGETS sdma_ep DESTINATION xio)
-install(FILES xio/__init__.py DESTINATION xio)
+if(XIO_SDMA_OSS7)
+  target_compile_definitions(sdma_ep PRIVATE XIO_SDMA_OSS7=1)
+endif()
+
+# Install the module into the xio package
+install(TARGETS sdma_ep
+  LIBRARY DESTINATION ${Python3_SITEARCH}/xio
+)
+install(FILES xio/__init__.py
+  DESTINATION ${Python3_SITEARCH}/xio
+)

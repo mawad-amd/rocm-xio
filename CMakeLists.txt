@@ -680,6 +680,12 @@ if(XIO_USE_KPACK)
   include(XIOKpack)
 endif()
 
+# Python bindings (pybind11)
+option(BUILD_PYTHON "Build Python bindings for SDMA endpoint" ON)
+if(BUILD_PYTHON)
+  add_subdirectory(python)
+endif()
+
 # Add test subdirectories (unit, system, hardware)
 if(BUILD_TESTING)
   include(XIODetectGPUs)

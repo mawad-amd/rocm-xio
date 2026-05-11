@@ -3,17 +3,17 @@
  * Provides the xio.sdma_ep module that iris imports:
  *   from xio import sdma_ep
  *
- * Host-side put/signal/quiet write SDMA packets directly
- * to the ring buffer from CPU and ring the doorbell.
- * The queue buffer is allocated with HostAccess=1 in anvil.
+ * Wraps the existing rocm-xio C++ host-side API directly.
+ * Links against librocm-xio.so — no source stripping or patching.
  *
- * Dependencies: HIP + hsakmt + HSA runtime (standard ROCm).
- * No rocm-xio kernel module needed.
+ * Host-side put/signal/quiet are implemented here because the
+ * existing C++ code only has __device__ versions. These write
+ * SDMA packets to the ring buffer from CPU and ring the doorbell.
+ * The queue buffer has HostAccess=1 (set by anvil's KFD alloc).
  */
 
 #include <cstdint>
 #include <cstring>
-#include <iostream>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
@@ -23,7 +23,8 @@
 
 #include <hip/hip_runtime.h>
 
-#include "anvil_standalone.hpp"
+#include "anvil.hpp"
+#include "sdma-ep.h"
 #include "sdma_pkt_struct.h"
 #include "sdma_opcodes.h"
 
@@ -57,10 +58,8 @@ static uint64_t make_key(int src, int dst) {
 }
 
 // ---- Host-side SDMA packet helpers ----
-
-// Read wptr, write packet at ring offset, advance wptr, ring doorbell.
-// Queue buffer has HostAccess=1 so CPU can write directly.
-// wptr/rptr/doorbell are memory-mapped via KFD so CPU can read/write directly.
+// wptr/rptr/doorbell are KFD memory-mapped pointers, CPU-accessible.
+// queueBuf is allocated with HostAccess=1 via hsaKmtAllocMemory.
 
 static uint64_t read_wptr(anvil::SdmaQueueDeviceHandle* h) {
   return *reinterpret_cast<volatile uint64_t*>(h->wptr);
@@ -201,9 +200,10 @@ PYBIND11_MODULE(sdma_ep, m) {
     .def_readwrite("height", &Tile::height)
     .def_readwrite("stride", &Tile::stride);
 
-  // init()
+  // init() — wraps xio::sdma_ep::initEndpoint
   m.def("init", []() {
-    anvil::AnvilLib::getInstance().init();
+    int rc = xio::sdma_ep::initEndpoint();
+    if (rc != 0) throw std::runtime_error("sdma_ep.init() failed");
   });
 
   // create_queue(src_rank, dst_rank)
@@ -211,15 +211,18 @@ PYBIND11_MODULE(sdma_ep, m) {
     uint64_t key = make_key(src_rank, dst_rank);
     if (s_queues.count(key)) return;
 
-    if (src_rank != dst_rank)
-      anvil::EnablePeerAccess(src_rank, dst_rank);
+    xio::sdma_ep::SdmaConnectionInfo conn;
+    int rc = xio::sdma_ep::createConnection(src_rank, dst_rank, &conn);
+    if (rc != 0) throw std::runtime_error("createConnection failed");
 
-    auto& lib = anvil::AnvilLib::getInstance();
-    uint32_t engineId = lib.getSdmaEngineId(src_rank, dst_rank);
-    int channelIdx = 0;
-    auto* q = lib.createSdmaQueue(src_rank, dst_rank, engineId, &channelIdx);
-    if (!q) throw std::runtime_error("createSdmaQueue failed");
-    s_queues[key] = {q, q->deviceHandle()};
+    xio::sdma_ep::SdmaQueueInfo info;
+    rc = xio::sdma_ep::createQueue(src_rank, dst_rank, &info);
+    if (rc != 0) throw std::runtime_error("createQueue failed");
+
+    auto* q = anvil::AnvilLib::getInstance().getSdmaQueue(
+      src_rank, dst_rank, info.channelIdx);
+    s_queues[key] = {q, static_cast<anvil::SdmaQueueDeviceHandle*>(
+                          info.deviceHandle)};
   });
 
   // create_host_queue — same path
@@ -227,15 +230,18 @@ PYBIND11_MODULE(sdma_ep, m) {
     uint64_t key = make_key(src_rank, dst_rank);
     if (s_queues.count(key)) return;
 
-    if (src_rank != dst_rank)
-      anvil::EnablePeerAccess(src_rank, dst_rank);
+    xio::sdma_ep::SdmaConnectionInfo conn;
+    int rc = xio::sdma_ep::createConnection(src_rank, dst_rank, &conn);
+    if (rc != 0) throw std::runtime_error("createConnection failed");
 
-    auto& lib = anvil::AnvilLib::getInstance();
-    uint32_t engineId = lib.getSdmaEngineId(src_rank, dst_rank);
-    int channelIdx = 0;
-    auto* q = lib.createSdmaQueue(src_rank, dst_rank, engineId, &channelIdx);
-    if (!q) throw std::runtime_error("createSdmaQueue failed");
-    s_queues[key] = {q, q->deviceHandle()};
+    xio::sdma_ep::SdmaQueueInfo info;
+    rc = xio::sdma_ep::createQueue(src_rank, dst_rank, &info);
+    if (rc != 0) throw std::runtime_error("createQueue failed");
+
+    auto* q = anvil::AnvilLib::getInstance().getSdmaQueue(
+      src_rank, dst_rank, info.channelIdx);
+    s_queues[key] = {q, static_cast<anvil::SdmaQueueDeviceHandle*>(
+                          info.deviceHandle)};
   });
 
   // get_queue_device_ctx(src_rank, dst_rank)
@@ -257,7 +263,7 @@ PYBIND11_MODULE(sdma_ep, m) {
     );
   });
 
-  // put(src_rank, dst_rank, channel, src_ptr, dst_ptr, size)
+  // Host-side put/signal/quiet — writes SDMA packets from CPU
   m.def("put", [](int src_rank, int dst_rank, int channel,
                    uint64_t src_ptr, uint64_t dst_ptr, uint64_t size) {
     (void)channel;
@@ -266,7 +272,6 @@ PYBIND11_MODULE(sdma_ep, m) {
     host_write_copy_linear(it->second.deviceHandle, src_ptr, dst_ptr, size);
   });
 
-  // put_signal
   m.def("put_signal", [](int src_rank, int dst_rank, int channel,
                           uint64_t src_ptr, uint64_t dst_ptr, uint64_t size,
                           uint64_t signal_ptr, uint64_t signal_val,
@@ -279,7 +284,6 @@ PYBIND11_MODULE(sdma_ep, m) {
     host_write_atomic_inc(h, signal_ptr);
   });
 
-  // signal
   m.def("signal", [](int src_rank, int dst_rank, int channel,
                       uint64_t signal_ptr, uint64_t signal_val,
                       int signal_bits) {
@@ -289,7 +293,6 @@ PYBIND11_MODULE(sdma_ep, m) {
     host_write_atomic_inc(it->second.deviceHandle, signal_ptr);
   });
 
-  // quiet
   m.def("quiet", [](int src_rank, int dst_rank, int channel) {
     (void)channel;
     auto it = s_queues.find(make_key(src_rank, dst_rank));
@@ -297,7 +300,6 @@ PYBIND11_MODULE(sdma_ep, m) {
     host_quiet(it->second.deviceHandle);
   });
 
-  // put_tile
   m.def("put_tile", [](int src_rank, int dst_rank, int channel,
                         const Tile& tile, uint64_t dst_ptr,
                         uint64_t dst_stride) {
@@ -310,7 +312,6 @@ PYBIND11_MODULE(sdma_ep, m) {
       static_cast<uint32_t>(dst_stride), 0, 0, 0, 0);
   });
 
-  // put_tile_signal
   m.def("put_tile_signal", [](int src_rank, int dst_rank, int channel,
                                const Tile& tile, uint64_t dst_ptr,
                                uint64_t dst_stride, uint64_t signal_ptr,
@@ -326,7 +327,6 @@ PYBIND11_MODULE(sdma_ep, m) {
     host_write_atomic_inc(h, signal_ptr);
   });
 
-  // wait_flag_then_put
   m.def("wait_flag_then_put", [](int src_rank, int dst_rank, int channel,
                                   uint64_t src_ptr, uint64_t dst_ptr,
                                   uint64_t size, uint64_t flag_ptr,
@@ -339,7 +339,6 @@ PYBIND11_MODULE(sdma_ep, m) {
     host_write_copy_linear(h, src_ptr, dst_ptr, size);
   });
 
-  // wait_flag_then_put_tile
   m.def("wait_flag_then_put_tile", [](int src_rank, int dst_rank, int channel,
                                        const Tile& tile, uint64_t dst_ptr,
                                        uint64_t dst_stride, uint64_t flag_ptr,
@@ -355,7 +354,6 @@ PYBIND11_MODULE(sdma_ep, m) {
       static_cast<uint32_t>(dst_stride), 0, 0, 0, 0);
   });
 
-  // put_tiles
   m.def("put_tiles", [](int src_rank, int dst_rank, int channel,
                          const std::vector<Tile>& tiles,
                          const std::vector<uint64_t>& dst_ptrs,
@@ -372,7 +370,6 @@ PYBIND11_MODULE(sdma_ep, m) {
     }
   });
 
-  // wait_flag_then_put_tiles
   m.def("wait_flag_then_put_tiles", [](int src_rank, int dst_rank, int channel,
                                         const std::vector<Tile>& tiles,
                                         const std::vector<uint64_t>& dst_ptrs,

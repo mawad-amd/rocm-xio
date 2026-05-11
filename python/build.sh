@@ -1,31 +1,33 @@
 #!/bin/bash
-# Build xio.sdma_ep pybind11 module directly without cmake.
-# Run inside a ROCm container with pybind11 installed.
+# Build xio.sdma_ep as part of the full rocm-xio cmake build.
 #
-# Usage: cd python && bash build.sh
-# Output: xio/sdma_ep.cpython-*.so
+# Usage: bash python/build.sh [gfx942|gfx950]
+# Run from the rocm-xio repo root.
 
 set -e
 
-SDMA_EP_DIR="../src/endpoints/sdma-ep"
-ROCM="/opt/rocm"
+ARCH="${1:-gfx942}"
 
-PYTHON_INCLUDES=$(python3 -m pybind11 --includes)
-PYTHON_SUFFIX=$(python3-config --extension-suffix)
+echo "Building rocm-xio + Python bindings for ${ARCH}..."
 
-g++ -O2 -shared -fPIC -std=c++17 \
-  ${PYTHON_INCLUDES} \
-  -I. \
-  -I${SDMA_EP_DIR} \
-  -I${ROCM}/include \
-  -I${ROCM}/include/hsakmt \
-  sdma_ep_bindings.cpp \
-  anvil_standalone.cpp \
-  -L${ROCM}/lib \
-  -lamdhip64 \
-  -lhsa-runtime64 \
-  -lhsakmt \
-  -o xio/sdma_ep${PYTHON_SUFFIX}
+# Install pybind11 if not present
+python3 -c "import pybind11" 2>/dev/null || pip install pybind11
 
-echo "Built xio/sdma_ep${PYTHON_SUFFIX}"
-echo "Test: cd .. && python3 -c 'from xio import sdma_ep; print(sdma_ep.SDMA_QUEUE_SIZE)'"
+mkdir -p build
+cd build
+
+cmake .. \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SHARED_LIBS=ON \
+  -DOFFLOAD_ARCH="${ARCH}" \
+  -DBUILD_CLIENTS=OFF \
+  -DBUILD_TESTING=OFF \
+  2>&1
+
+# Build just the sdma_ep pybind11 module (and its dependency librocm-xio.so)
+make -j$(nproc) sdma_ep 2>&1
+
+echo ""
+echo "Built successfully. To install:"
+echo "  export PYTHONPATH=$(pwd)/python:\$PYTHONPATH"
+echo "  python3 -c 'from xio import sdma_ep; print(sdma_ep.SDMA_QUEUE_SIZE)'"
