@@ -396,9 +396,8 @@ if(BUILD_SHARED_LIBS)
     ROCM_XIO_BUILDING_LIBRARY
     ROCM_XIO_SHARED
   )
-  if(NOT BUILD_PYTHON)
-    target_compile_options(rocm-xio PRIVATE -fvisibility=hidden)
-  endif()
+  # Disabled: Python bindings need these symbols exported
+  # target_compile_options(rocm-xio PRIVATE -fvisibility=hidden)
 endif()
 
 # GNUInstallDirs must be included before the INSTALL_INTERFACE
