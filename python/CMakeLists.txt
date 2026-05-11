@@ -51,10 +51,20 @@ if(XIO_SDMA_OSS7)
   target_compile_definitions(sdma_ep PRIVATE XIO_SDMA_OSS7=1)
 endif()
 
-# Install the module into the xio package
-install(TARGETS sdma_ep
-  LIBRARY DESTINATION ${Python3_SITEARCH}/xio
+# Set RPATH so sdma_ep.so finds librocm-xio.so in the same package directory
+set_target_properties(sdma_ep PROPERTIES
+  INSTALL_RPATH "$ORIGIN"
+  BUILD_WITH_INSTALL_RPATH TRUE
 )
-install(FILES xio/__init__.py
-  DESTINATION ${Python3_SITEARCH}/xio
-)
+
+# Install the module + shared lib into the xio package
+# SKBUILD_PLATLIB_DIR is set by scikit-build-core; fall back to site-packages for standalone cmake
+if(SKBUILD_PLATLIB_DIR)
+  set(_xio_install_dir "${SKBUILD_PLATLIB_DIR}/xio")
+else()
+  set(_xio_install_dir "${Python3_SITEARCH}/xio")
+endif()
+
+install(TARGETS sdma_ep LIBRARY DESTINATION "${_xio_install_dir}")
+install(TARGETS rocm-xio LIBRARY DESTINATION "${_xio_install_dir}")
+install(FILES xio/__init__.py DESTINATION "${_xio_install_dir}")

@@ -12,3 +12,4 @@ dependencies = []
 [tool.scikit-build]
 cmake.args = ["-DBUILD_SHARED_LIBS=ON", "-DBUILD_CLIENTS=OFF", "-DBUILD_TESTING=OFF"]
 cmake.build-type = "Release"
+wheel.packages = []
