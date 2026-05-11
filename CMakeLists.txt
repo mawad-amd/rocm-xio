@@ -396,7 +396,9 @@ if(BUILD_SHARED_LIBS)
     ROCM_XIO_BUILDING_LIBRARY
     ROCM_XIO_SHARED
   )
-  target_compile_options(rocm-xio PRIVATE -fvisibility=hidden)
+  if(NOT BUILD_PYTHON)
+    target_compile_options(rocm-xio PRIVATE -fvisibility=hidden)
+  endif()
 endif()
 
 # GNUInstallDirs must be included before the INSTALL_INTERFACE
