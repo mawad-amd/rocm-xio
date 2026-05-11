@@ -1,0 +1,20 @@
+[build-system]
+requires = ["scikit-build-core>=0.5", "pybind11>=2.11"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "xio"
+version = "0.1.0"
+description = "Python bindings for rocm-xio SDMA endpoint"
+requires-python = ">=3.8"
+
+[tool.scikit-build]
+cmake.source-dir = ".."
+cmake.build-type = "Release"
+cmake.args = [
+    "-DBUILD_SHARED_LIBS=ON",
+    "-DBUILD_CLIENTS=OFF",
+    "-DBUILD_TESTING=OFF",
+    "-DXIO_BUILD_PYTHON=ON",
+]
+wheel.packages = ["xio"]
