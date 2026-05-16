@@ -91,12 +91,20 @@ hsa_status_t rocm_hsa_cpu_agent_callback(hsa_agent_t agent,
   return rocm_hsa_agent_callback(agent, HSA_DEVICE_TYPE_CPU, context);
 }
 
-void SetUpKFD() {
-  CHECK_HSAKMT_SUCCESS(hsaKmtOpenKFD(), "hsaKmtOpenKFD() failed!");
+bool SetUpKFD() {
+  HSAKMT_STATUS status = hsaKmtOpenKFD();
+  if (status != HSAKMT_STATUS_SUCCESS) {
+    std::cerr << "hsaKmtOpenKFD() failed (status=" << status << ")" << std::endl;
+    return false;
+  }
   HsaSystemProperties m_SystemProperties;
   std::memset(&m_SystemProperties, 0, sizeof(m_SystemProperties));
-  CHECK_HSAKMT_SUCCESS(hsaKmtAcquireSystemProperties(&m_SystemProperties),
-                       "Failed!");
+  status = hsaKmtAcquireSystemProperties(&m_SystemProperties);
+  if (status != HSAKMT_STATUS_SUCCESS) {
+    std::cerr << "hsaKmtAcquireSystemProperties() failed (status=" << status << ")" << std::endl;
+    return false;
+  }
+  return true;
 }
 
 // True only after init() has run (SetUpKFD). Avoids CloseKFD/hsa_shut_down at
@@ -387,27 +395,29 @@ AnvilLib::~AnvilLib() {
 
 void AnvilLib::init() {
   std::call_once(init_flag, []() {
-    //   std::atexit(CloseKFD); // Register cleanup
-
     // HSA
     hsa_status_t status{hsa_init()};
     if (status != HSA_STATUS_SUCCESS) {
-      printf("Failure to open HSA connection: 0x%x", status);
-      // return 1;
+      std::cerr << "xio: hsa_init() failed (0x" << std::hex << status
+                << std::dec << "), SDMA queues may not work" << std::endl;
     }
     status = hsa_iterate_agents(&rocm_hsa_gpu_agent_callback, &gpuAgents_);
     if (status != HSA_STATUS_SUCCESS && status != HSA_STATUS_INFO_BREAK) {
-      printf("Failure to iterate HSA agents: 0x%x", status);
-      // return 1;
+      std::cerr << "xio: hsa_iterate_agents(GPU) failed (0x" << std::hex
+                << status << std::dec << ")" << std::endl;
     }
     status = hsa_iterate_agents(&rocm_hsa_cpu_agent_callback, &cpuAgents_);
     if (status != HSA_STATUS_SUCCESS && status != HSA_STATUS_INFO_BREAK) {
-      printf("Failure to iterate HSA agents: 0x%x", status);
-      // return 1;
+      std::cerr << "xio: hsa_iterate_agents(CPU) failed (0x" << std::hex
+                << status << std::dec << ")" << std::endl;
     }
 
-    SetUpKFD();
-    s_kfd_opened = true;
+    if (SetUpKFD()) {
+      s_kfd_opened = true;
+    } else {
+      std::cerr << "xio: KFD setup failed, SDMA queue creation will fail"
+                << std::endl;
+    }
   });
 }
 
@@ -453,17 +463,21 @@ AnvilLib& AnvilLib::getInstance() {
 }
 
 int AnvilLib::getOamId(int deviceId) {
-  std::string busId = getBusId(deviceId);
+  std::string busId;
+  try {
+    busId = getBusId(deviceId);
+  } catch (const std::exception&) {
+    return -1;
+  }
   std::string file_str = "/sys/bus/pci/devices/" + busId + "/xgmi_physical_id";
   std::ifstream file(file_str);
   int xgmi_physical_id;
   if (file.is_open()) {
     if (!(file >> xgmi_physical_id)) {
-      throw std::runtime_error("Failed to read xGMI physical id from file: " +
-                               file_str);
+      return -1;
     }
   } else {
-    throw std::runtime_error("Failed to open file: " + file_str);
+    return -1;
   }
   return xgmi_physical_id;
 }
@@ -471,6 +485,11 @@ int AnvilLib::getOamId(int deviceId) {
 int AnvilLib::getSdmaEngineId(int srcDeviceId, int dstDeviceId) {
   int srcOamId = getOamId(srcDeviceId);
   int dstOamId = getOamId(dstDeviceId);
+
+  if (srcOamId < 0 || dstOamId < 0 ||
+      srcOamId >= 8 || dstOamId >= 8) {
+    return 0;
+  }
 
   // Use even engines only
   return mi300xOamMap[srcOamId][dstOamId] * 2;
