@@ -234,11 +234,20 @@ SdmaQueue::SdmaQueue(int localDeviceId, int remoteDeviceId,
   // TODO needed here?
   std::memset(&queue_, 0, sizeof(HsaQueueResource));
 
-  CHECK_HSAKMT_SUCCESS(
-    hsaKmtCreateQueueExt(localNodeId, HSA_QUEUE_SDMA_BY_ENG_ID,
-                         DEFAULT_QUEUE_PERCENTAGE, DEFAULT_PRIORITY, engineId,
-                         queueBuffer_, SDMA_QUEUE_SIZE, nullptr, &queue_),
-    "Failed");
+  if (engineId == 0 && AnvilLib::getInstance().getOamId(localDeviceId) < 0) {
+    // No sysfs topology — use basic SDMA queue type
+    CHECK_HSAKMT_SUCCESS(
+      hsaKmtCreateQueue(localNodeId, HSA_QUEUE_SDMA,
+                        DEFAULT_QUEUE_PERCENTAGE, DEFAULT_PRIORITY,
+                        queueBuffer_, SDMA_QUEUE_SIZE, nullptr, &queue_),
+      "Failed to create SDMA queue");
+  } else {
+    CHECK_HSAKMT_SUCCESS(
+      hsaKmtCreateQueueExt(localNodeId, HSA_QUEUE_SDMA_BY_ENG_ID,
+                           DEFAULT_QUEUE_PERCENTAGE, DEFAULT_PRIORITY, engineId,
+                           queueBuffer_, SDMA_QUEUE_SIZE, nullptr, &queue_),
+      "Failed to create SDMA queue");
+  }
 
   // Populate Device Handle
   // TODO uncached
